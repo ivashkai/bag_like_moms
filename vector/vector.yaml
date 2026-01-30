@@ -1,0 +1,35 @@
+sources:
+  http_logs:
+    type: http
+    address: 0.0.0.0:8080
+
+transforms:
+  parse_json:
+    type: remap
+    inputs: ["http_logs"]
+    source: |
+      parsed, err = parse_json(.message)
+      if err == null {
+          . = parsed
+          .ts = parse_timestamp!(.ts, format: "%Y-%m-%dT%H:%M:%S%.f")
+          
+          # Жесткое приведение типов, чтобы ClickHouse не ругался (400 error)
+          if exists(.amount) { .amount = to_float!(.amount) }
+          if exists(.cart_total) { .cart_total = to_float!(.cart_total) }
+          if exists(.latency_ms) { .latency_ms = to_int!(.latency_ms) }
+          if exists(.user_id) { .user_id = to_int!(.user_id) }
+          if exists(.already_applied) { .already_applied = if to_bool(.already_applied) ?? false { 1 } else { 0 } }
+      }
+
+sinks:
+  clickhouse_out:
+    type: clickhouse
+    inputs: ["parse_json"]
+    endpoint: "http://clickhouse:8123"
+    database: "shop_logs"
+    table: "events"
+    auth:
+      strategy: basic
+      user: "admin"
+      password: "admin123"
+    skip_unknown_fields: true

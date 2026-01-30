@@ -1,0 +1,47 @@
+version: '3.8'
+
+services:
+  clickhouse:
+    image: clickhouse/clickhouse-server:latest
+    container_name: clickhouse
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    volumes:
+      - ./clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql
+    environment:
+      # Важно: эти параметры сработают только на чистом Volume!
+      CLICKHOUSE_DB: "shop_logs"
+      CLICKHOUSE_USER: "admin"
+      CLICKHOUSE_PASSWORD: "admin123"
+      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+
+  vector:
+    image: timberio/vector:0.34.X-debian
+    container_name: vector
+    depends_on:
+      - clickhouse
+    volumes:
+      - ./vector/vector.yaml:/etc/vector/vector.yaml:ro
+    ports:
+      - "8080:8080"
+
+  generator:
+    build: ./generator
+    container_name: generator
+    depends_on:
+      - vector
+    environment:
+      VECTOR_URL: "http://vector:8080"
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    ports:
+      - "3000:3000"
+    environment:
+      GF_INSTALL_PLUGINS: "grafana-clickhouse-datasource"
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
+    volumes:
+      - ./grafana/provisioning:/etc/grafana/provisioning
