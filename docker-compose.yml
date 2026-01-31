@@ -1,47 +1,52 @@
 version: '3.8'
-
 services:
-  clickhouse:
-    image: clickhouse/clickhouse-server:latest
-    container_name: clickhouse
+  # Брокер
+  rabbitmq:
+    image: rabbitmq:3-management
     ports:
-      - "8123:8123"
-      - "9000:9000"
-    volumes:
-      - ./clickhouse/init.sql:/docker-entrypoint-initdb.d/init.sql
-    environment:
-      # Важно: эти параметры сработают только на чистом Volume!
-      CLICKHOUSE_DB: "shop_logs"
-      CLICKHOUSE_USER: "admin"
-      CLICKHOUSE_PASSWORD: "admin123"
-      CLICKHOUSE_DEFAULT_ACCESS_MANAGEMENT: "1"
+      - "5672:5672"
+      - "15672:15672"
+    healthcheck:
+      test: ["CMD", "rabbitmq-diagnostics", "check_running"]
+      interval: 5s
+      retries: 5
 
+  # Хранилище метрик (числа)
+  victoriametrics:
+    image: victoriametrics/victoria-metrics:latest
+    ports:
+      - "8428:8428"
+    command: ["--retentionPeriod=1"]
+
+  # Хранилище логов (текст)
+  victorialogs:
+    image: victoriametrics/victoria-logs:latest
+    ports:
+      - "9428:9428"
+
+  # Сборщик и маршрутизатор
   vector:
-    image: timberio/vector:0.34.X-debian
-    container_name: vector
-    depends_on:
-      - clickhouse
+    image: timberio/vector:0.34.1-distroless-libc
     volumes:
       - ./vector/vector.yaml:/etc/vector/vector.yaml:ro
-    ports:
-      - "8080:8080"
+    depends_on:
+      rabbitmq: { condition: service_healthy }
+    restart: always
 
+  # Генератор
   generator:
     build: ./generator
-    container_name: generator
     depends_on:
-      - vector
-    environment:
-      VECTOR_URL: "http://vector:8080"
+      rabbitmq: { condition: service_healthy }
+    restart: always
 
+  # Визуализация
   grafana:
-    image: grafana/grafana:latest
-    container_name: grafana
+    image: grafana/grafana-oss:latest
     ports:
       - "3000:3000"
     environment:
-      GF_INSTALL_PLUGINS: "grafana-clickhouse-datasource"
-      GF_AUTH_ANONYMOUS_ENABLED: "true"
-      GF_AUTH_ANONYMOUS_ORG_ROLE: "Admin"
-    volumes:
-      - ./grafana/provisioning:/etc/grafana/provisioning
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_INSTALL_PLUGINS=victoriametrics-logs-datasource
+    depends_on:
+      - victoriametrics

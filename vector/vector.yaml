@@ -1,35 +1,48 @@
 sources:
-  http_logs:
-    type: http
-    address: 0.0.0.0:8080
+  rabbitmq_source:
+    type: amqp
+    connection_string: "amqp://guest:guest@rabbitmq:5672/%2f"
+    queue: "events"
 
 transforms:
-  parse_json:
+  parse_data:
     type: remap
-    inputs: ["http_logs"]
+    inputs: ["rabbitmq_source"]
     source: |
-      parsed, err = parse_json(.message)
-      if err == null {
-          . = parsed
-          .ts = parse_timestamp!(.ts, format: "%Y-%m-%dT%H:%M:%S%.f")
-          
-          # Жесткое приведение типов, чтобы ClickHouse не ругался (400 error)
-          if exists(.amount) { .amount = to_float!(.amount) }
-          if exists(.cart_total) { .cart_total = to_float!(.cart_total) }
-          if exists(.latency_ms) { .latency_ms = to_int!(.latency_ms) }
-          if exists(.user_id) { .user_id = to_int!(.user_id) }
-          if exists(.already_applied) { .already_applied = if to_bool(.already_applied) ?? false { 1 } else { 0 } }
-      }
+      . = parse_json!(.message)
+      .timestamp = now()
+
+  extract_logs:
+    type: remap
+    inputs: ["parse_data"]
+    source: |
+      log_data = .log
+      log_data.timestamp = .timestamp
+      . = log_data
+
+  make_metrics:
+    type: log_to_metric
+    inputs: ["parse_data"]
+    metrics:
+      - type: gauge
+        field: metrics.price
+        name: shop_item_price
+      - type: gauge
+        field: metrics.latency
+        name: shop_request_latency
+      - type: counter
+        field: metrics.is_error
+        name: shop_errors_total
 
 sinks:
-  clickhouse_out:
-    type: clickhouse
-    inputs: ["parse_json"]
-    endpoint: "http://clickhouse:8123"
-    database: "shop_logs"
-    table: "events"
-    auth:
-      strategy: basic
-      user: "admin"
-      password: "admin123"
-    skip_unknown_fields: true
+  to_vm_metrics:
+    type: prometheus_remote_write
+    inputs: ["make_metrics"]
+    endpoint: "http://victoriametrics:8428/api/v1/write"
+
+  to_vm_logs:
+    type: elasticsearch
+    inputs: ["extract_logs"]
+    endpoint: "http://victorialogs:9428/insert/elasticsearch/"
+    mode: bulk
+    api_version: v7
